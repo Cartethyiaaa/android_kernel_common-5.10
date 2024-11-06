@@ -114,6 +114,8 @@
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 
+#include <linux/sched/bore.h>
+
 #include <trace/events/sched.h>
 
 #define CREATE_TRACE_POINTS
@@ -971,6 +973,9 @@ void __put_task_struct(struct task_struct *tsk)
 	delayacct_tsk_free(tsk);
 	put_signal_struct(tsk->signal);
 	sched_core_free(tsk);
+#ifdef CONFIG_SCHED_BORE
+	free_task_bore(tsk);
+#endif
 	free_task(tsk);
 }
 EXPORT_SYMBOL_GPL(__put_task_struct);
@@ -2527,6 +2532,14 @@ __latent_entropy struct task_struct *copy_process(
 	p->start_time = ktime_get_ns();
 	p->start_boottime = ktime_get_boottime_ns();
 
+#ifdef CONFIG_SCHED_BORE
+	if (likely(p->pid)) {
+		retval = alloc_task_bore(p);
+		if (retval)
+			goto bad_fork_sched_cancel_fork;
+		sched_clone_bore(p, current, clone_flags, p->start_time);
+	}
+#endif // CONFIG_SCHED_BORE
 	/*
 	 * Make it visible to the rest of the system, but dont wake it up yet.
 	 * Need tasklist lock for parent etc handling!
