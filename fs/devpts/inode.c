@@ -605,9 +605,6 @@ extern int ksu_handle_devpts(struct inode*);
 
 #if defined(CONFIG_KSU_SUSFS_SUS_SU)
 extern bool ksu_devpts_hook;
-#endif
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
 extern int ksu_handle_devpts(struct inode*);
 #endif
 
