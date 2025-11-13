@@ -32,9 +32,6 @@
 #include <linux/ima.h>
 #include <linux/dnotify.h>
 #include <linux/compat.h>
-#ifdef CONFIG_KSU_SUSFS_SUS_SU
-#include <linux/susfs_def.h>
-#endif
 
 #include "internal.h"
 #include <trace/hooks/syscall_check.h>
@@ -397,13 +394,6 @@ static const struct cred *access_override_creds(void)
 
 	return old_cred;
 }
-
-#ifdef CONFIG_KSU_SUSFS_SUS_SU
-extern bool susfs_is_sus_su_hooks_enabled __read_mostly;
-extern bool __ksu_is_allow_uid(uid_t uid);
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
-			int *flags);
-#endif
 
 static long do_faccessat(int dfd, const char __user *filename, int mode, int flags)
 {
