@@ -70,9 +70,9 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (to see the precise effective timeslice length of your workload,
  *  run vmstat and monitor the context-switches (cs) field)
  *
- * (default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
+ * (default: 5ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
-unsigned int sysctl_sched_latency			= 6000000ULL;
+unsigned int sysctl_sched_latency			= 5000000ULL;
 EXPORT_SYMBOL_GPL(sysctl_sched_latency);
 
 /*
@@ -91,11 +91,11 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
 /*
  * Minimal preemption granularity for CPU-bound tasks:
  *
- * (default: 0.70 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ * (default: 0.60 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
-unsigned int sysctl_sched_base_slice			= 700000ULL;
+unsigned int sysctl_sched_base_slice			= 600000ULL;
 EXPORT_SYMBOL_GPL(sysctl_sched_base_slice);
-static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
+static unsigned int normalized_sysctl_sched_base_slice	= 600000ULL;
 
 /*
  * After fork, child runs first. If set to 0 (default) then
@@ -103,7 +103,7 @@ static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
  */
 unsigned int sysctl_sched_child_runs_first __read_mostly;
 
-const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 450000UL;
 
 static int __init setup_sched_thermal_decay_shift(char *str)
 {
