@@ -640,7 +640,7 @@ static u32 __ffa_host_share_ranges(struct ffa_mem_region_addr_range *ranges,
 		u64 sz = (u64)range->pg_cnt * FFA_PAGE_SIZE;
 		u64 pfn = hyp_phys_to_pfn(range->address);
 
-		if (!PAGE_ALIGNED(sz))
+		if (!PAGE_ALIGNED(sz | range->address))
 			break;
 
 		if (static_branch_unlikely(&kvm_ffa_unmap_on_lend) && is_lend)
@@ -670,7 +670,7 @@ static u32 __ffa_host_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
 		u64 sz = (u64)range->pg_cnt * FFA_PAGE_SIZE;
 		u64 pfn = hyp_phys_to_pfn(range->address);
 
-		if (!PAGE_ALIGNED(sz))
+		if (!PAGE_ALIGNED(sz | range->address))
 			break;
 
 		if (static_branch_unlikely(&kvm_ffa_unmap_on_lend) && is_lend)
@@ -898,12 +898,13 @@ static int __do_ffa_mem_xfer(const u64 func_id,
 	struct ffa_composite_mem_region *reg, *temp_reg;
 	struct ffa_mem_region *buf;
 	struct kvm_ffa_buffers *ffa_buf;
-	u32 offset, nr_ranges, checked_offset;
+	u32 offset, nr_ranges, checked_offset, em_mem_access_off;
 	int ret = 0;
 	struct ffa_mem_transfer *transfer = NULL;
 	u64 ffa_handle;
 	bool is_lend = func_id == FFA_FN64_MEM_LEND;
 	struct ffa_handle *handle = NULL;
+	size_t mem_region_len = FFA_MEM_REGION_SZ(hyp_ffa_version);
 
 	if (addr_mbz || npages_mbz || fraglen > len ||
 	    fraglen > KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE) {
@@ -911,8 +912,7 @@ static int __do_ffa_mem_xfer(const u64 func_id,
 		return 0;
 	}
 
-	if (fraglen < sizeof(struct ffa_mem_region) +
-		      sizeof(struct ffa_mem_region_attributes)) {
+	if (fraglen < mem_region_len + ffa_emad_size_get(hyp_ffa_version)) {
 		ffa_to_smccc_error(res, FFA_RET_INVALID_PARAMETERS);
 		return 0;
 	}
@@ -946,8 +946,13 @@ static int __do_ffa_mem_xfer(const u64 func_id,
 	buf = hyp_buffers.tx;
 	memcpy(buf, ffa_buf->tx, fraglen);
 
-	ep_mem_access = (void *)buf +
-			ffa_mem_desc_offset(buf, 0, hyp_ffa_version);
+	em_mem_access_off = ffa_mem_desc_offset(buf, 0, hyp_ffa_version);
+	if ((u64)em_mem_access_off + ffa_emad_size_get(hyp_ffa_version) > fraglen) {
+		ffa_to_smccc_error(res, FFA_RET_INVALID_PARAMETERS);
+		goto out_unlock;
+	}
+
+	ep_mem_access = (void *)buf + em_mem_access_off;
 	offset = ep_mem_access->composite_off;
 	if (!offset || buf->ep_count != 1 || buf->sender_id != hyp_vcpu_to_ffa_handle(hyp_vcpu)) {
 		ffa_to_smccc_error(res, FFA_RET_INVALID_PARAMETERS);
@@ -1081,7 +1086,7 @@ static void do_ffa_mem_reclaim(struct arm_smccc_res *res,
 	DECLARE_REG(u32, flags, ctxt, 3);
 	struct ffa_mem_region_attributes *ep_mem_access;
 	struct ffa_composite_mem_region *reg;
-	u32 offset, len, fraglen, fragoff;
+	u32 offset, len, fraglen, fragoff, em_mem_access_off;
 	struct ffa_mem_region *buf;
 	int ret = 0;
 	u64 handle;
@@ -1132,16 +1137,22 @@ static void do_ffa_mem_reclaim(struct arm_smccc_res *res,
 	len = res->a1;
 	fraglen = res->a2;
 
-	ep_mem_access = (void *)buf +
-			ffa_mem_desc_offset(buf, 0, hyp_ffa_version);
+	em_mem_access_off = ffa_mem_desc_offset(buf, 0, hyp_ffa_version);
+	if ((u64)em_mem_access_off + ffa_emad_size_get(hyp_ffa_version) > fraglen) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		ffa_rx_release(res);
+		goto out_unlock;
+	}
+
+	ep_mem_access = (void *)buf + em_mem_access_off;
 	offset = ep_mem_access->composite_off;
 	/*
 	 * We can trust the SPMD to get this right, but let's at least
 	 * check that we end up with something that doesn't look _completely_
 	 * bogus.
 	 */
-	if (WARN_ON(offset > len ||
-		    fraglen > KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE)) {
+	if (offset + CONSTITUENTS_OFFSET(0) > len ||
+	    fraglen > KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE) {
 		ret = FFA_RET_ABORTED;
 		ffa_rx_release(res);
 		goto out_unlock;
@@ -1179,10 +1190,16 @@ out_reclaim:
 		ffa_guest_unshare_ranges(hyp_vcpu, transfer);
 	else {
 		reg = (void *)buf + offset;
-		WARN_ON(ffa_host_unshare_ranges(reg->constituents,
-						reg->addr_range_cnt, is_lend));
 		if (static_branch_unlikely(&kvm_ffa_unmap_on_lend))
 			ffa_host_clear_handle(handle);
+
+		if (offset + CONSTITUENTS_OFFSET(reg->addr_range_cnt) > len) {
+			ret = FFA_RET_ABORTED;
+			goto out_unlock;
+		}
+
+		WARN_ON(ffa_host_unshare_ranges(reg->constituents,
+						reg->addr_range_cnt, is_lend));
 	}
 
 	if (transfer) {
@@ -1501,7 +1518,7 @@ static int kvm_host_ffa_signal_availability(void)
 
 bool kvm_host_ffa_handler(struct kvm_cpu_context *host_ctxt, u32 func_id)
 {
-	struct arm_smccc_res res;
+	struct arm_smccc_res res = {0};
 	int ret;
 
 	/*
@@ -1613,7 +1630,7 @@ bool kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 {
 	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
 	struct kvm_cpu_context *ctxt = &vcpu->arch.ctxt;
-	struct arm_smccc_res res;
+	struct arm_smccc_res res =  {0};
 	int ret, hyp_alloc_ret;
 	struct kvm_hyp_req *req;
 
@@ -1796,6 +1813,7 @@ u32 ffa_get_hypervisor_version(void)
 
 int hyp_ffa_init(void *pages)
 {
+	unsigned long num_pages = hyp_ffa_proxy_pages();
 	struct arm_smccc_res res;
 	void *tx, *rx;
 
@@ -1827,12 +1845,20 @@ int hyp_ffa_init(void *pages)
 	else
 		hyp_ffa_version = FFA_VERSION_1_1;
 
+	if (num_pages < 2 * KVM_FFA_MBOX_NR_PAGES)
+		return -ENOMEM;
+
+	num_pages -= 2 * KVM_FFA_MBOX_NR_PAGES;
 	tx = pages;
 	pages += KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE;
 	rx = pages;
 	pages += KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE;
 
 	if (static_branch_unlikely(&kvm_ffa_unmap_on_lend)) {
+		if (num_pages < KVM_FFA_SPM_HANDLE_NR_PAGES)
+			return -ENOMEM;
+
+		num_pages -= KVM_FFA_SPM_HANDLE_NR_PAGES;
 		spm_handles = pages;
 		pages += KVM_FFA_SPM_HANDLE_NR_PAGES * PAGE_SIZE;
 		num_spm_handles = KVM_FFA_SPM_HANDLE_NR_PAGES * PAGE_SIZE /
@@ -1840,10 +1866,12 @@ int hyp_ffa_init(void *pages)
 		memset(spm_handles, -1, KVM_FFA_SPM_HANDLE_NR_PAGES * PAGE_SIZE);
 	}
 
+	if (!num_pages)
+		return -ENOMEM;
+
 	ffa_desc_buf = (struct kvm_ffa_descriptor_buffer) {
 		.buf	= pages,
-		.len	= PAGE_SIZE *
-			  (hyp_ffa_proxy_pages() - (2 * KVM_FFA_MBOX_NR_PAGES)),
+		.len	= PAGE_SIZE * num_pages,
 	};
 
 	hyp_buffers = (struct kvm_ffa_buffers) {
