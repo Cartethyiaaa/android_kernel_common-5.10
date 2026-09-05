@@ -37,6 +37,22 @@ struct cass_cpu_cand {
 	unsigned long util;
 };
 
+/*
+ * Utilization threshold below which a non-boosted CFS task is treated as a
+ * "small" task (e.g. background messaging/social apps waking up briefly to
+ * push a notification or poll a socket). Small tasks are biased toward
+ * staying on their previous CPU instead of being spread onto a higher-
+ * capacity, possibly idle-but-cold CPU, since migrating a bursty, low-util
+ * task across clusters costs more in cache/TLB refill and frequency ramps
+ * than it saves. Foreground/latency-sensitive tasks (games, etc.) typically
+ * run well above this threshold and are unaffected.
+ *
+ * 1/16th of SCHED_CAPACITY_SCALE (~64 out of 1024, i.e. ~6.25% of a CPU) is
+ * a conservative cutoff; tune down for more aggressive packing or up for
+ * more aggressive spreading.
+ */
+#define CASS_SMALL_TASK_UTIL	(SCHED_CAPACITY_SCALE / 16)
+
 static __always_inline
 void cass_cpu_util(struct cass_cpu_cand *c, int this_cpu, bool sync)
 {
@@ -47,7 +63,7 @@ void cass_cpu_util(struct cass_cpu_cand *c, int this_cpu, bool sync)
 	/* Get this CPU's utilization from CFS tasks */
 	c->util = READ_ONCE(cfs_rq->avg.util_avg);
 	if (sched_feat(UTIL_EST)) {
-		est = READ_ONCE(cfs_rq->avg.util_est.enqueued);
+		est = READ_ONCE(cfs_rq->avg.util_est);
 		if (est > c->util) {
 			/* Don't deduct @current's util from estimated util */
 			sync = false;
@@ -96,7 +112,7 @@ bool cass_prime_cpu(const struct cass_cpu_cand *c)
 static __always_inline
 bool cass_cpu_better(const struct cass_cpu_cand *a,
 		     const struct cass_cpu_cand *b, unsigned long p_util,
-		     int this_cpu, int prev_cpu, bool sync)
+		     int this_cpu, int prev_cpu, bool sync, bool small_task)
 {
 #define cass_cmp(a, b) ({ res = (a) - (b); })
 #define cass_eq(a, b) ({ res = (a) == (b); })
@@ -129,8 +145,23 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 	if (cass_cmp(!!a->exit_lat, !!b->exit_lat))
 		goto done;
 
-	/* Prefer the current CPU for sync wakes */
+	/*
+	 * Prefer the current CPU for sync wakes. Checked before the small-task
+	 * previous-CPU preference below so a foreground sync waker (typically
+	 * a game/UI thread signalling a render/input thread) still wins over
+	 * small-task packing.
+	 */
 	if (sync && (cass_eq(a->cpu, this_cpu) || !cass_cmp(b->cpu, this_cpu)))
+		goto done;
+
+	/*
+	 * Small, non-boosted tasks: prefer the previous CPU over a
+	 * higher-capacity one. This packs bursty background wakeups (social
+	 * media notification/socket handling, etc.) back onto the CPU they
+	 * already warmed up instead of migrating them to a bigger, colder
+	 * core for a handful of PELT ticks.
+	 */
+	if (small_task && (cass_eq(a->cpu, prev_cpu) || !cass_cmp(b->cpu, prev_cpu)))
 		goto done;
 
 	/* Prefer the CPU with higher capacity */
@@ -164,6 +195,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	unsigned long p_util, uc_min;
 	bool has_idle = false;
 	int cidx = 0, cpu;
+	bool small_task;
 
 	/*
 	 * Get the utilization and uclamp minimum threshold for this task. Note
@@ -171,6 +203,13 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	 */
 	p_util = rt ? 0 : task_util_est(p);
 	uc_min = uclamp_eff_value(p, UCLAMP_MIN);
+
+	/*
+	 * A task is "small" if it's a non-boosted CFS task under the small
+	 * task threshold. RT tasks and uclamp-boosted tasks always go through
+	 * the normal capacity-seeking path.
+	 */
+	small_task = !rt && !uc_min && p_util < CASS_SMALL_TASK_UTIL;
 
 	/*
 	 * Find the best CPU to wake @p on. Although idle_get_state() requires
@@ -192,8 +231,17 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		/* Get the original, maximum _possible_ capacity of this CPU */
 		curr->cap_orig = arch_scale_cpu_capacity(cpu);
 
-		/* Get the _current_, throttled maximum capacity of this CPU */
-		curr->cap_max = curr->cap_orig - thermal_load_avg(rq);
+		/*
+		 * Get the _current_, throttled maximum capacity of this CPU.
+		 * thermal_load_avg()/CONFIG_SCHED_THERMAL_PRESSURE were
+		 * renamed/replaced by the more general HW-pressure tracking
+		 * (hw_load_avg()) plus cpufreq_get_pressure(); this mirrors
+		 * what fair.c's own get_actual_cpu_capacity() computes, so
+		 * CASS sees the same thermal/cpufreq-capped capacity that
+		 * the rest of the scheduler does.
+		 */
+		curr->cap_max = curr->cap_orig -
+			max(hw_load_avg(rq), cpufreq_get_pressure(cpu));
 
 		/* Prefer the CPU that more closely meets the uclamp minimum */
 		if (curr->cap_max < uc_min && curr->cap_max < best->cap_max)
@@ -285,7 +333,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		 */
 		if (best == curr ||
 		    cass_cpu_better(curr, best, p_util, this_cpu, prev_cpu,
-				    sync)) {
+				    sync, small_task)) {
 			best = curr;
 			cidx ^= 1;
 		}
