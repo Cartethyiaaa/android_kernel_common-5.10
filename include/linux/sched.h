@@ -543,25 +543,6 @@ struct sched_statistics {
 #endif /* CONFIG_SCHEDSTATS */
 } ____cacheline_aligned;
 
-#ifdef CONFIG_SCHED_BORE
-struct sched_burst_cache {
-	u8				score;
-	u32				count;
-	u64				timestamp;
-	spinlock_t		lock;
-};
-
-struct sched_bore_data {
-	u64				burst_time;
-	u8				prev_burst_penalty;
-	u8				curr_burst_penalty;
-	u8				burst_penalty;
-	u8				burst_score;
-	struct sched_burst_cache child_burst;
-	struct sched_burst_cache group_burst;
-};
-#endif // CONFIG_SCHED_BORE
-
 struct sched_entity {
 	/* For load-balancing: */
 	struct load_weight		load;
@@ -607,23 +588,7 @@ struct sched_entity {
 	struct sched_avg		avg;
 #endif
 
-	/*
-	 * NOTE (KMI fix): BORE fields used to be inserted directly above,
-	 * before `vlag`, which shifted the offset of every field after them
-	 * and broke ABI compatibility with prebuilt/out-of-tree vendor
-	 * modules relying on a fixed task_struct/sched_entity layout
-	 * (observed as NULL/garbage pointer derefs and bootloops at splash
-	 * on MediaTek devices loading OE-tainted vendor .ko blobs).
-	 * Fields are now stored out-of-line via a pointer occupying a
-	 * pre-existing ANDROID_KABI_RESERVE slot, which keeps the struct
-	 * size and every other field's offset identical to the non-BORE
-	 * layout. See kernel/sched/bore.c: alloc_task_bore()/free_task_bore().
-	 */
-#ifdef CONFIG_SCHED_BORE
-	ANDROID_KABI_USE(1, struct sched_bore_data *bore);
-#else
 	ANDROID_KABI_RESERVE(1);
-#endif
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
