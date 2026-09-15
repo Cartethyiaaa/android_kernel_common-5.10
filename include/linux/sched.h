@@ -544,21 +544,36 @@ struct sched_statistics {
 } ____cacheline_aligned;
 
 #ifdef CONFIG_SCHED_BORE
+#define BORE_BC_TIMESTAMP_SHIFT 16
+
+/* Lockless burst-cache entry: 48-bit timestamp + 16-bit penalty, packed
+ * into a single u64 so it can be read/written atomically with
+ * READ_ONCE()/WRITE_ONCE() instead of a spinlock. */
 struct sched_burst_cache {
-	u8				score;
-	u32				count;
-	u64				timestamp;
-	spinlock_t		lock;
+	union {
+		struct {
+			u64			timestamp:	48;
+			u64			penalty:	16;
+		};
+		u64				value;
+	};
 };
 
 struct sched_bore_data {
 	u64				burst_time;
-	u8				prev_burst_penalty;
-	u8				curr_burst_penalty;
-	u8				burst_penalty;
-	u8				burst_score;
-	struct sched_burst_cache child_burst;
-	struct sched_burst_cache group_burst;
+	u16				prev_penalty;
+	u16				curr_penalty;
+	union {
+		u16			penalty;
+		struct {
+			u8		_pad;
+			u8		score;
+		};
+	};
+	bool			stop_update;
+	bool			futex_waiting;
+	struct sched_burst_cache subtree;
+	struct sched_burst_cache group;
 };
 #endif // CONFIG_SCHED_BORE
 

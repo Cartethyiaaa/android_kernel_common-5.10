@@ -1,43 +1,41 @@
 
 #include <linux/sched.h>
 #include <linux/sched/cputime.h>
+#include <linux/jump_label.h>
 
 #ifndef _LINUX_SCHED_BORE_H
 #define _LINUX_SCHED_BORE_H
-#define SCHED_BORE_VERSION "5.9.6"
+#define SCHED_BORE_AUTHOR   "Masahito Suzuki"
+#define SCHED_BORE_PROGNAME "BORE CPU Scheduler modification"
+#define SCHED_BORE_VERSION  "6.6.3"
 
 #ifdef CONFIG_SCHED_BORE
 extern u8   __read_mostly sched_bore;
-extern u8   __read_mostly sched_burst_exclude_kthreads;
-extern u8   __read_mostly sched_burst_smoothness_long;
-extern u8   __read_mostly sched_burst_smoothness_short;
-extern u8   __read_mostly sched_burst_fork_atavistic;
-extern u8   __read_mostly sched_burst_parity_threshold;
+DECLARE_STATIC_KEY_TRUE(sched_bore_key);
+extern u8   __read_mostly sched_burst_inherit_type;
+extern u8   __read_mostly sched_burst_smoothness;
 extern u8   __read_mostly sched_burst_penalty_offset;
 extern uint __read_mostly sched_burst_penalty_scale;
-extern uint __read_mostly sched_burst_cache_stop_count;
 extern uint __read_mostly sched_burst_cache_lifetime;
-extern uint __read_mostly sched_deadline_boost_mask;
 
 /* KMI-safe out-of-line storage for per-entity BORE state, see sched.h */
 extern struct sched_bore_data init_task_bore_data;
 extern int  alloc_task_bore(struct task_struct *p);
 extern void free_task_bore(struct task_struct *p);
 
-extern void update_burst_score(struct sched_entity *se);
-extern void update_burst_penalty(struct sched_entity *se);
-
-extern void restart_burst(struct sched_entity *se);
-extern void restart_burst_rescale_deadline(struct sched_entity *se);
+extern u8   effective_prio_bore(struct task_struct *p);
+extern void update_curr_bore(struct task_struct *p, u64 delta_exec);
+extern void restart_burst_bore(struct task_struct *p);
+extern void restart_burst_rescale_deadline_bore(struct task_struct *p);
+extern void task_fork_bore(
+	struct task_struct *p, struct task_struct *parent, u64 clone_flags, u64 now);
+extern void sched_init_bore(void);
+extern void reset_task_bore(struct task_struct *p);
 
 extern int sched_bore_update_handler(const struct ctl_table *table, int write,
 	void __user *buffer, size_t *lenp, loff_t *ppos);
-
-extern void sched_clone_bore(
-	struct task_struct *p, struct task_struct *parent, u64 clone_flags, u64 now);
-
-extern void reset_task_bore(struct task_struct *p);
-extern void sched_bore_init(void);
+extern int sched_burst_inherit_type_update_handler(const struct ctl_table *table,
+	int write, void __user *buffer, size_t *lenp, loff_t *ppos);
 
 extern void reweight_entity(
 	struct cfs_rq *cfs_rq, struct sched_entity *se, unsigned long weight);
