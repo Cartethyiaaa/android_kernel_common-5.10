@@ -17,6 +17,20 @@ menuconfig THERMAL
 
 if THERMAL
 
+config THERMAL_CUSTOM_LIMIT
+	bool "Custom user-controlled thermal ceiling (/sys/thermalcustom)"
+	default y
+	help
+	  Adds a standalone /sys/thermalcustom/temp_max sysfs node, RW,
+	  degrees Celsius, defaulting to 45. This is a plain storage +
+	  export point (see thermalcustom_get_temp_max() in
+	  include/linux/thermalcustom.h) that other drivers can consult to
+	  decide whether to relax their own throttling — it does not by
+	  itself alter MediaTek's or the generic thermal framework's trip
+	  points/cooling devices.
+
+	  If unsure, say Y here.
+
 config THERMAL_NETLINK
 	bool "Thermal netlink management"
 	depends on NET

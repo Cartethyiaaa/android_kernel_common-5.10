@@ -16,6 +16,10 @@
 
 #include "thermal_core.h"
 
+#ifdef CONFIG_THERMAL_CUSTOM_LIMIT
+#include <linux/thermalcustom.h>
+#endif
+
 /*
  * If the temperature is higher than a trip point,
  *    a. if the trend is THERMAL_TREND_RAISING, use higher cooling
@@ -75,11 +79,32 @@ static void thermal_zone_trip_update(struct thermal_zone_device *tz,
 	struct thermal_instance *instance;
 	bool throttle = false;
 
+#ifdef CONFIG_THERMAL_CUSTOM_LIMIT
+	/*
+	 * Mode 0 (DEFAULT): thermalcustom_is_enabled() is false, so this
+	 * hook does nothing at all - the device's own trip point decides,
+	 * exactly as if CONFIG_THERMAL_CUSTOM_LIMIT wasn't set.
+	 *
+	 * Any other mode: ignore this trip point (and whatever DT/vendor
+	 * threshold feeds it, MediaTek's included) entirely while the zone
+	 * is still below the active /sys/thermalcustom/temp_max ceiling.
+	 * throttle stays false, so get_target_state() below only ever
+	 * relaxes/holds the bound cooling devices for this trip instead of
+	 * stepping them up.
+	 */
+	if (thermalcustom_is_enabled() &&
+			tz->temperature < thermalcustom_get_temp_max() * 1000)
+		goto skip_trip_check;
+#endif
+
 	if (tz->temperature >= trip_threshold) {
 		throttle = true;
 		trace_thermal_zone_trip(tz, trip_id, trip->type);
 	}
 
+#ifdef CONFIG_THERMAL_CUSTOM_LIMIT
+skip_trip_check:
+#endif
 	dev_dbg(&tz->device, "Trip%d[type=%d,temp=%d]:trend=%d,throttle=%d\n",
 		trip_id, trip->type, trip_threshold, trend, throttle);
 
