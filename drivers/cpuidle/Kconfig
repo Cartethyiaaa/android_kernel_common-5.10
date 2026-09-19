@@ -60,6 +60,16 @@ config CPU_IDLE_GOV_NAP
 	  It does not out-rank menu or teo: select it explicitly with
 	  cpuidle.governor=nap on the kernel command line.
 
+config CPU_IDLE_GOV_NAP_SELFTEST
+	bool "Self-test the NAP governor's fixed-point math at boot"
+	depends on CPU_IDLE_GOV_NAP
+	help
+	  Verify the fixed-point log2 and sigmoid kernels (monotonicity,
+	  exactness at powers of two and at zero, saturating-multiply
+	  overflow behaviour) during boot and report to dmesg.  Useful when
+	  porting to a new architecture or toolchain.  Say N for production
+	  builds.
+
 config DT_IDLE_STATES
 	bool
 
